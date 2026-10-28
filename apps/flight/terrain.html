@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Single-file Example</title>
+    <!-- part of a multi-part demonstration: see cs418.cs.illinois.edu -->
+    <script src="wrapWebGL2.js"></script>
+    <script src="math.js"></script>
+
+
+<!-- The source code of a vertex shader directly in the HTML. The 'type=' command can have any value except "javascript" and just tells the browser not to try to run the code as javascript. -->
+<script id="vert" type="glsl">
+#version 300 es
+layout(location=0) in vec4 position;
+layout(location=1) in vec3 normal;
+uniform mat4 mv;
+uniform mat4 p;
+out vec3 vnormal;
+out vec3 vpos; // eye-space position
+void main() {
+    vec4 pos_eye = mv * position;
+    gl_Position = p * pos_eye;
+    vpos = pos_eye.xyz;
+    vnormal = mat3(mv) * normal;
+}
+</script>
+
+
+<!-- The source code of a fragment shader. -->
+<script id="frag" type="glsl">
+#version 300 es
+precision highp float;
+uniform vec4 color;
+
+uniform vec3 lightdir; 
+uniform vec3 lightcolor;
+
+out vec4 fragColor;
+in vec3 vnormal;
+in vec3 vpos; 
+void main() {
+    vec3 n = normalize(vnormal);
+    vec3 L = normalize(lightdir);
+    vec3 V = normalize(-vpos);
+    vec3 halfway = normalize(L + V);
+
+    float lambert = max(dot(n, L), 0.0);
+    
+    float shininess = 64.0;
+    float blinn = pow(max(dot(n, halfway), 0.0), shininess);
+
+    vec3 diffuse = lambert * lightcolor * color.rgb;
+
+    vec3 specular = blinn * lightcolor;
+    vec3 colorLinear = diffuse + specular * 0.75;
+    fragColor = vec4(colorLinear, 1.0);
+
+}
+</script>
+
+<!-- Code I don't expect to change. -->
+<script>
+const IlliniBlue = new Float32Array([0.075, 0.16, 0.292, 1])
+const IlliniOrange = new Float32Array([1, 0.373, 0.02, 1])
+const IdentityMatrix = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1])
+const EarthColor = new Float32Array([0.651, 0.432, 0.135, 1])
+
+const earthRotPerSec = 2 * Math.PI * 1.5; // 1.5 rotations per second
+
+/**
+ * Given the source code of a vertex and fragment shader, compiles them,
+ * and returns the linked program.
+ */
+function compileShader(vs_source, fs_source) {
+    const vs = gl.createShader(gl.VERTEX_SHADER)
+    gl.shaderSource(vs, vs_source)
+    gl.compileShader(vs)
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(vs))
+        throw Error("Vertex shader compilation failed")
+    }
+
+    const fs = gl.createShader(gl.FRAGMENT_SHADER)
+    gl.shaderSource(fs, fs_source)
+    gl.compileShader(fs)
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(fs))
+        throw Error("Fragment shader compilation failed")
+    }
+
+    const program = gl.createProgram()
+    gl.attachShader(program, vs)
+    gl.attachShader(program, fs)
+    gl.linkProgram(program)
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error(gl.getProgramInfoLog(program))
+        throw Error("Linking failed")
+    }
+    
+    const uniforms = {}
+    for(let i=0; i<gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS); i+=1) {
+        let info = gl.getActiveUniform(program, i)
+        uniforms[info.name] = gl.getUniformLocation(program, info.name)
+    }
+    program.uniforms = uniforms
+
+    return program
+}
+
+/**
+ * Sends per-vertex data to the GPU and connects it to a VS input
+ * 
+ * @param data    a 2D array of per-vertex data (e.g. [[x,y,z,w],[x,y,z,w],...])
+ * @param loc     the layout location of the vertex shader's `in` attribute
+ * @param mode    (optional) gl.STATIC_DRAW, gl.DYNAMIC_DRAW, etc
+ * 
+ * @returns the ID of the buffer in GPU memory; useful for changing data later
+ */
+function supplyDataBuffer(data, loc, mode) {
+    if (mode === undefined) mode = gl.STATIC_DRAW
+    
+    const buf = gl.createBuffer()
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf)
+    const f32 = new Float32Array(data.flat())
+    gl.bufferData(gl.ARRAY_BUFFER, f32, mode)
+    
+    gl.vertexAttribPointer(loc, data[0].length, gl.FLOAT, false, 0, 0)
+    gl.enableVertexAttribArray(loc)
+    
+    return buf;
+}
+
+/**
+ * Creates a Vertex Array Object and puts into it all of the data in the given
+ * JSON structure, which should have the following form:
+ * 
+ * ````
+ * {"triangles": a list of of indices of vertices
+ * ,"attributes":
+ *  [ a list of 1-, 2-, 3-, or 4-vectors, one per vertex to go in location 0
+ *  , a list of 1-, 2-, 3-, or 4-vectors, one per vertex to go in location 1
+ *  , ...
+ *  ]
+ * }
+ * ````
+ * 
+ * @returns an object with four keys:
+ *  - mode = the 1st argument for gl.drawElements
+ *  - count = the 2nd argument for gl.drawElements
+ *  - type = the 3rd argument for gl.drawElements
+ *  - vao = the vertex array object for use with gl.bindVertexArray
+ */
+function setupGeometry(geom) {
+    var triangleArray = gl.createVertexArray()
+    gl.bindVertexArray(triangleArray)
+
+    for(let i=0; i<geom.attributes.length; i+=1) {
+        let data = geom.attributes[i]
+        supplyDataBuffer(data, i)
+    }
+
+    var indices = new Uint16Array(geom.triangles.flat())
+    var indexBuffer = gl.createBuffer()
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer)
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
+
+    return {
+        mode: gl.TRIANGLES,
+        count: indices.length,
+        type: gl.UNSIGNED_SHORT,
+        vao: triangleArray
+    }
+}
+</script>
+
+<!-- All the other code in one big script element. -->
+<script>
+
+function addNormals(geom, gridSize) {
+    let ni = geom.attributes.length
+    geom.attributes.push([])
+    for(let i = 0; i < geom.attributes[0].length; i+=1) {
+        geom.attributes[ni].push([0,0,0])
+    }
+    for (let x = 0; x < gridSize; x++) {
+        for (let y = 0; y < gridSize; y++) {
+            let v = geom.attributes[ni - 1][x * gridSize + y]
+            let n = [0, 0, 0]
+            if(y == 0) {n = v}
+            else
+            {
+                n = geom.attributes[ni - 1][x * gridSize + y - 1]
+            }
+            let s = [0, 0, 0]
+            if(y == gridSize - 1) {s = v}
+            else
+            {
+                s = geom.attributes[ni - 1][x * gridSize + y + 1]
+            }
+            let w = [0, 0, 0]
+            if(x == 0) {w = v}
+            else{
+                w = geom.attributes[ni - 1][(x - 1) * gridSize + y]
+            }
+            let e = [0, 0, 0]
+            if(x == gridSize - 1) {e = v}
+            else
+            {
+                e = geom.attributes[ni - 1][(x + 1) * gridSize + y]
+            }
+            let nMinS = sub(n, s)
+            let wMinE = sub(w, e)
+            geom.attributes[ni][x * gridSize + y] = normalize(cross(nMinS, wMinE))
+        }
+    }
+}
+
+function generateTerrainGrid(gridSize, faultCount, sphere=false) {
+    // TO DO: generate a gridSize-by-gridSize grid here, then apply faults to it
+    let g = {"triangles": [], "attributes": [[]]} // position
+
+    for (let x = 0; x < gridSize; x++) {
+        for (let y = 0; y < gridSize; y++) {
+            // Generate vertex positions
+            g.attributes[0].push([-1 + x / (gridSize - 1) * 2, 0, -1 + y / (gridSize - 1) * 2]) //keep it alll between -1 and 1
+        }
+    }
+
+    // Apply faults
+    if(sphere) {
+        for (let i = 0; i < g.attributes[0].length; i++) {
+            let vertex = g.attributes[0][i]
+            let x = vertex[0]
+            let z = vertex[2]
+            let rsquared = x*x + z*z
+            if(rsquared > 1){
+                vertex[1] = 0
+                continue
+            }
+            let y = Math.sqrt(1 - rsquared)
+            vertex[1] = y
+        }
+    }
+    else{
+        let delta = 0.4
+        for (let i = 0; i < faultCount; i++) {
+            let p = [Math.random() * 2 - 1, Math.random() * 2 - 1] // random point between -1 and 1
+            let theta = Math.random() * 2 * Math.PI
+            let n = [Math.cos(theta), Math.sin(theta)] // random normal vector
+            
+            for (let x = 0; x < gridSize; x++) {
+                for (let y = 0; y < gridSize; y++) {
+                    let vertex = g.attributes[0][x * gridSize + y]
+                    let v = [vertex[0], vertex[2]] // x and z coordinates
+                    let d = (v[0] - p[0]) * n[0] + (v[1] - p[1]) * n[1]
+                    if (d > 0) {
+                        vertex[1] += delta // raise the height
+                    } else {
+                        vertex[1] -= delta // lower the height
+                    }
+                }
+            }
+        }
+    }
+    if(faultCount > 0) {
+        let maxHeight = -Infinity
+        let minHeight = Infinity
+        for (let i = 0; i < g.attributes[0].length; i++) {
+            let height = g.attributes[0][i][1]
+            if (height > maxHeight) maxHeight = height
+            if (height < minHeight) minHeight = height
+        }
+
+        let c = 1.0 //what the tallest peak is
+        for (let i = 0; i < g.attributes[0].length; i++) {
+            let height = g.attributes[0][i][1]
+            let newHeight = c * (height - 0.5 * (maxHeight + minHeight)) / (maxHeight - minHeight)
+            // Update color based on height
+            g.attributes[0][i][1] = newHeight;
+        }
+    }
+    // Generate triangles
+    for (let x = 0; x < gridSize - 1; x++) {
+        for (let y = 0; y < gridSize - 1; y++) {
+            let topLeft = x * gridSize + y
+            let topRight = topLeft + 1
+            let bottomLeft = (x + 1) * gridSize + y
+            let bottomRight = bottomLeft + 1
+
+            // First triangle
+            g.triangles.push([topLeft, bottomLeft, topRight])
+            // Second triangle
+            g.triangles.push([topRight, bottomLeft, bottomRight])
+
+            
+        }
+    }
+    addNormals(g, gridSize)
+    console.log(g.attributes)
+    console.log(g.triangles)
+    return g
+}
+
+
+
+let cameraPos = [0, 0.8, 1.3]
+let cameraFront = [0, -1, -1]
+const globalUp = [0, 1, 0]
+/** Draw one frame */
+
+
+function draw(seconds) {
+    gl.clearColor(...IlliniBlue) // f(...[1,2,3]) means f(1,2,3)
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+    gl.useProgram(program)
+
+    if(typeof grid === 'undefined') return;
+    gl.bindVertexArray(grid.vao)
+
+
+    // the GRID
+    gl.uniform4f(program.uniforms.color, EarthColor[0], EarthColor[1], EarthColor[2], EarthColor[3])
+    
+    let cameraRight = normalize(cross(cameraFront, globalUp))
+    let cameraUp = normalize(cross(cameraRight, cameraFront))
+
+    if(keysBeingPressed['ArrowLeft']) {
+        cameraFront = m3mul(m3rot(-0.01, globalUp), cameraFront)
+    }
+    if(keysBeingPressed['ArrowRight']) {
+        cameraFront = m3mul(m3rot(0.01, globalUp), cameraFront)
+    }
+    if(keysBeingPressed['ArrowUp']) {
+        cameraFront = m3mul(m3rot(-0.01, cameraRight), cameraFront)
+    }
+    if(keysBeingPressed['ArrowDown']) {
+        cameraFront = m3mul(m3rot(0.01, cameraRight), cameraFront)
+    }
+    if(keysBeingPressed['d']) {
+        cameraPos = add(cameraPos, mul(cameraRight, 0.02))
+    }
+    if(keysBeingPressed['a']) {
+        cameraPos = add(cameraPos, mul(cameraRight, -0.02))
+    }
+    if(keysBeingPressed['w']) {
+        cameraPos = add(cameraPos, mul(cameraFront, 0.02))
+    }
+    if(keysBeingPressed['s']) {
+        cameraPos = add(cameraPos, mul(cameraFront, -0.02))
+    }
+    
+    let v = m4view(cameraPos,  add(cameraPos, cameraFront), [0,1,0])
+    // model and view
+    let m = m4scale(1, 1, 1)
+    let mv = m4mul(v, m)
+    gl.uniformMatrix4fv(program.uniforms.mv, false, mv)
+    gl.uniformMatrix4fv(program.uniforms.p, false, p)
+
+    // base light direction in model space; rotate with model and transform to viewspace
+    let ld_model = [1, 2, 1]
+    let ld = normalize([
+        mv[0]*ld_model[0] + mv[4]*ld_model[1] + mv[8]*ld_model[2],
+        mv[1]*ld_model[0] + mv[5]*ld_model[1] + mv[9]*ld_model[2],
+        mv[2]*ld_model[0] + mv[6]*ld_model[1] + mv[10]*ld_model[2]
+    ])
+    gl.uniform3fv(program.uniforms.lightdir, ld)
+    gl.uniform3fv(program.uniforms.lightcolor, [1,1,1])
+
+    gl.drawElements(grid.mode, grid.count, grid.type, 0)
+}
+
+/** Compute any time-varying or animated aspects of the scene */
+function tick(milliseconds) {
+    let seconds = milliseconds / 1000;
+
+    draw(seconds)
+    requestAnimationFrame(tick)
+}
+
+/** Resizes the canvas to completely fill the screen */
+function fillScreen() {
+    let canvas = document.querySelector('canvas')
+    document.body.style.margin = '0'
+    canvas.style.width = '100%'
+    canvas.style.height = '100%'
+    canvas.width = canvas.clientWidth
+    canvas.height = canvas.clientHeight
+    canvas.style.width = ''
+    canvas.style.height = ''
+    gl.viewport(0,0, canvas.width, canvas.height)
+    window.p = m4perspNegZ(0.1, 10, 1.5, canvas.width, canvas.height)
+}
+
+/** Compile, link, set up geometry */
+window.addEventListener('load', async (event) => {
+    window.gl = document.querySelector('canvas').getContext('webgl2',
+        // optional configuration object: see https://developer.mozilla.org/en-US/docs/Web/API/HTMLCanvasElement/getContext
+        {antialias: false, depth:true, preserveDrawingBuffer:true}
+    )
+    let vs = document.querySelector('#vert').textContent.trim()
+    let fs = document.querySelector('#frag').textContent.trim()
+    window.program = compileShader(vs,fs)
+    gl.enable(gl.DEPTH_TEST)
+    fillScreen()
+    window.addEventListener('resize', fillScreen)
+    requestAnimationFrame(tick)
+
+    // document.querySelector('#sphere').checked = false
+    // const gridsize = Number(document.querySelector('#gridsize').value) || 2
+    // const faults = Number(document.querySelector('#faults').value) || 0
+    // const sphere = document.querySelector('#sphere').checked
+    // document.querySelector('#submit').addEventListener('click', event => {
+    //     const gridsize = Number(document.querySelector('#gridsize').value) || 2
+    //     const faults = Number(document.querySelector('#faults').value) || 0
+    //     const sphere = document.querySelector('#sphere').checked
+    //     window.grid = setupGeometry(generateTerrainGrid(gridsize, faults, sphere))
+    // })
+    
+    window.grid = setupGeometry(generateTerrainGrid(50, 50, false))
+    
+    window.keysBeingPressed = {}
+    window.addEventListener('keydown', event => keysBeingPressed[event.key] = true)
+    window.addEventListener('keyup', event => keysBeingPressed[event.key] = false)
+
+})
+
+</script>
+
+    <style>
+    body {
+        margin: 0; border: none; padding: 0;
+        display: flex; flex-direction: column;
+        width: 100%; height: 100vh;
+    }
+    .controls {
+        flex: 0 0 auto;
+    }
+    .controls > * { margin: 1em; }
+    .display {
+        flex-grow: 1;
+        line-height: 0rem;
+    }
+    </style>
+</head>
+<body>
+<!-- <form class="controls" action="javascript:void(0);">
+    <label>Grid size: <input id="gridsize" type="number" value="50"/></label>
+    <label>Faults: <input id="faults" type="number" value="50"/></label>
+    <label>Sphere: <input id="sphere" type="checkbox"  /></label>
+    <input id="submit" type="submit" value="Regenerate Terrain"/>
+    
+</form> -->
+<div class="display">
+    <canvas width="300" height="300"></canvas>
+</div>
+</body>
+</html>
