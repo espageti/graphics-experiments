@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Wake Simulation</title>
+  <style>
+    body{margin:0;background:#021022;color:#dbeafe;font-family:system-ui,Segoe UI,Arial}
+    canvas{display:block;width:100vw;height:100vh}
+    .ui{position:fixed;right:12px;top:12px;background:rgba(6,10,20,0.7);padding:12px;border-radius:8px;color:#dbeafe;z-index:30;width:260px}
+    .ui label{font-size:13px;display:block;margin-top:8px}
+    .nav{position:fixed;left:12px;top:12px;z-index:40}
+    .nav a{color:#cfe8ff;text-decoration:none;background:rgba(2,6,23,0.6);padding:8px 10px;border-radius:8px}
+    input[type=range]{width:100%}
+    .small{font-size:12px;color:#9fb0d1}
+  </style>
+</head>
+<body>
+  <div class="nav"><a href="../index.html">← Apps</a></div>
+  <canvas id="gl"></canvas>
+  <canvas id="overlay" style="position:fixed;left:0;top:0;pointer-events:none;z-index:35"></canvas>
+
+  <aside id="notes" style="position:fixed;left:12px;right:auto;top:80px;width:320px;height:calc(100vh - 100px);background:rgba(4,8,16,0.95);color:#dbeafe;padding:12px;border-radius:8px;overflow:auto;z-index:9999;box-shadow:0 6px 18px rgba(0,0,0,0.6);display:block">
+    <div style="margin-bottom:8px"><strong>Notes</strong></div>
+    <div id="notesContent" style="min-height:160px;font-size:14px;line-height:1.45">
+      <p>Write about this simulation: goals, parameters, observations, or instructions. Edit apps/wake-simulation/notes.html to change this content.</p>
+    </div>
+  </aside>
+
+  <div class="ui">
+    <div><strong>Wake Simulation</strong></div>
+    <label>Resolution: <span id="resLabel">128</span></label>
+    <input id="res" type="range" min="16" max="512" value="128">
+
+    <label>Point Size: <span id="psLabel">3</span></label>
+    <input id="ps" type="range" min="1" max="8" value="3">
+
+    <label>Render Mode:</label>
+    <select id="mode">
+      <option value="filled">Filled</option>
+      <option value="wireframe">Wireframe</option>
+      <option value="points">Points</option>
+    </select>
+
+    <label>Amplitude: <span id="ampLabel">0.35</span></label>
+    <input id="amp" type="range" min="0" max="1" step="0.01" value="0.35">
+
+    <label>Speed: <span id="spdLabel">2.2</span></label>
+    <input id="spd" type="range" min="0" max="6" step="0.1" value="2.2">
+
+    <hr style="margin:10px 0;border:none;border-top:1px solid rgba(255,255,255,0.04)">
+    <div style="margin-top:8px"><strong>Boat Controls</strong></div>
+    <div class="small">Boat position is controlled by the path editor or programmatically.</div>
+    <label style="margin-top:10px">Path Editor</label>
+    <div style="display:flex;gap:8px;margin-top:6px">
+      <button id="toggleEdit">Edit Path</button>
+      <button id="playPath">Play</button>
+      <button id="clearPath">Clear</button>
+    </div>
+    <label style="margin-top:8px">Path Speed: <span id="pathSpeedLabel">1.0</span></label>
+    <input id="pathSpeed" type="range" min="0" max="6" step="0.1" value="1">
+  </div>
+
+  <!-- gl-matrix for simple camera matrices -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/2.8.1/gl-matrix-min.js"></script>
+
+  <!-- load modular JS and shaders from the wake-simulation folder -->
+  <script type="module" src="./main.js"></script>
+  </script>
+</body>
+</html>

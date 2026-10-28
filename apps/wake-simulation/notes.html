@@ -1,0 +1,36 @@
+<h3>Wake Simulation Notes</h3>
+<p>Edit this file (apps/wake-simulation/notes.html) to change the documentation shown in the sidebar.</p>
+
+<h4>Overview</h4>
+<p>This is a demo implementing the approach to wake simulation from the paper: 
+    Khan, Raza Saleem. “A simple model of ship wakes.” (1994).
+The idea is to simulate wakes as  circular rings emitted by a moving boat. Rings spawn at the boat's position and expand as the boat travels; their radius increases by one third the distance the boat has traveled since spawning.</p>
+
+<h4> Water Surface </h4>
+<p>The fluid is is represented as a grid of vertices that can be displaced up and down to create waves and ripples. The displacement is calculated based on the interaction with the boat and the generated wakes.</p>
+
+<h4>Model Loading</h4>
+<p>The boat model is loaded from a obj file (boat.obj). 
+    The .obj file format is a simple open standard for representing 3D geometry. 
+    Vertex positions, normals, and texture coordinates are read from the file and stored in buffers for rendering.
+    The model is scaled and positioned in the scene, and its transformation matrix is updated each frame based on the boat's position and orientation.</p>
+
+<h4> Spline </h4>
+<p> I used Catmull-Rom splines to create smooth paths for the boat.
+    Catmull-Rom is a way to create smooth curves that pass through its control points, defined by four points per segment.
+    This is in contrast with B-splines, which do not pass through their control points.
+    The segment is drawn between only P1 and P2, while P0 and P3 are used to calculate the tangents at the endpoints. 
+    If P1 is the first point, P0 is set to P1, essentially duplicating the start point. LIkewise, if P2 is the last point, P3 is set to P2.
+    There are also 4 respective knot sequence "times" for each point, t0, t1, t2, and t3. 
+    The default is for the 4 points to be evenly spaced in "time", in order to determine where along the spline a poitn would be.
+</p>
+
+<h4>Controls</h4>
+<ul>
+  <li>Drag on the canvas to orbit the camera. Wheel to zoom.</li>
+  <li>Use the Path Editor to create a spline path for the boat — Edit, then Play to animate.</li>
+  <li>The sidebar content is read from this file for easy editing.</li>
+</ul>
+
+<h4>Notes</h4>
+<p>You can document parameter choices, experiments, or observations here. This content is static to page visitors and should be edited directly in this file.</p>

@@ -1,0 +1,14 @@
+<h3>Deferred Shading Notes</h3>
+<p>This demo compares three ways to display the same animated cube scene.</p>
+
+<h4>Quad view</h4>
+<p>The G-buffer textures are shown as a debug layout: world position, encoded normals, and albedo.</p>
+
+<h4>Deferred shading</h4>
+<p>The geometry pass stores position, albedo, and normal data in textures. A fullscreen quad then reads those textures and calculates the lighting for each screen pixel.</p>
+
+<h4>Forward shading</h4>
+<p>Each cube is shaded directly while its geometry is rendered. The fragment shader receives the interpolated world position and normal from the vertex shader.</p>
+
+<h4>Controls</h4>
+<p>Use WASD to move the camera and the arrow keys to rotate it. Use the buttons in the upper-right to switch render modes.</p>
