@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Deferred Shading</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body { margin: 0; overflow: hidden; background: #050505; color:#e6eef8 }
+    canvas { width: 100vw; height: 100vh; display: block; }
+    .nav{position:fixed;left:12px;top:12px;z-index:20}
+    .nav a{color:#cfe8ff;text-decoration:none;background:rgba(2,6,23,0.6);padding:8px 10px;border-radius:8px}
+    #notes{position:fixed;left:12px;top:80px;width:300px;height:calc(100vh - 100px);box-sizing:border-box;background:rgba(4,8,16,0.95);color:#dbeafe;padding:12px;border-radius:8px;overflow:auto;z-index:25;box-shadow:0 6px 18px rgba(0,0,0,0.6);font-size:14px;line-height:1.45}
+    #notes h3,#notes h4{margin:0 0 8px}
+    #notes p{margin:0 0 12px;color:#b8c7df}
+  </style>
+</head>
+<body>
+  <div class="nav"><a href="index.html">← Apps</a></div>
+  <div id="renderModeControls" style="position:fixed;right:16px;top:16px;z-index:30;display:flex;gap:8px;">
+    <button class="mode-btn" data-mode="quad" style="padding:10px 12px;border:none;border-radius:8px;background:#dbeafe;color:#06111a;font-weight:600;cursor:pointer">Quad view</button>
+    <button class="mode-btn" data-mode="deferred" style="padding:10px 12px;border:none;border-radius:8px;background:#dbeafe;color:#06111a;font-weight:600;cursor:pointer">Deferred shading</button>
+    <button class="mode-btn" data-mode="forward" style="padding:10px 12px;border:none;border-radius:8px;background:#dbeafe;color:#06111a;font-weight:600;cursor:pointer">Forward shading</button>
+  </div>
+  <aside id="notes">
+    <div style="margin-bottom:8px"><strong>Notes</strong></div>
+    <div id="notesContent"><p>Loading notes...</p></div>
+  </aside>
+  <canvas id="glcanvas"></canvas>
+
+  <!-- Load gl-matrix v3 library from CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/2.8.1/gl-matrix-min.js"></script>
+
+  <script>
+    const canvas = document.getElementById('glcanvas');
+    const gl = canvas.getContext('webgl2');
+
+    fetch('./deferred-shading/notes.html')
+      .then((response) => {
+        if (!response.ok) throw new Error(response.statusText);
+        return response.text();
+      })
+      .then((notes) => {
+        document.getElementById('notesContent').innerHTML = notes;
+      })
+      .catch(() => {
+        document.getElementById('notesContent').innerHTML = '<p>Notes could not be loaded. Run this app through a local server.</p>';
+      });
+
+    if (!gl) alert('WebGL 2 not supported!');
+
+    // Enable Depth Testing for 3D Geometry
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+
+    // 1. Geometry Pass Shaders: Write only geometry to the G-Buffer (position, albedo)
+    const vsGeometry = `#version 300 es
+        layout(location = 0) in vec3 a_position;
+        layout(location = 2) in vec3 a_normal;
+
+        uniform mat4 u_model;
+        uniform mat4 u_view;
+        uniform mat4 u_projection;
+        uniform vec3 u_color;
+
+        out vec3 v_worldPos;
+        out vec3 v_worldNormal;
+        out vec3 v_color;
+
+        void main() {
+            vec4 worldPos = u_model * vec4(a_position, 1.0);
+            gl_Position = u_projection * u_view * worldPos;
+            v_worldPos = worldPos.xyz;
+            v_color = u_color;
+            v_worldNormal = normalize(mat3(transpose(inverse(mat4(u_model)))) * a_normal);
+
+        }
+    `;
+
+    const fsGeometry = `#version 300 es
+      precision mediump float;
+      in vec3 v_color;
+      in vec3 v_worldPos;
+      in vec3 v_worldNormal;
+
+      layout(location = 0) out vec4 outPosition;
+      layout(location = 1) out vec4 outAlbedo;
+      layout(location = 2) out vec4 outNormal;
+
+      void main() {
+        outPosition = vec4(v_worldPos, 1.0);
+        outAlbedo = vec4(v_color, 1.0);
+        outNormal = vec4(v_worldNormal * 0.5 + 0.5, 1.0);
+      }
+    `;
+
+    const vsQuad = `#version 300 es
+        in vec2 a_position;
+        out vec2 v_uv;
+
+        void main() {
+            v_uv = a_position * 0.5 + 0.5;
+            gl_Position = vec4(a_position, 0.0, 1.0);
+        }
+    `;
+    const fsQuad = `#version 300 es
+        precision mediump float;
+        in vec2 v_uv;
+        
+        uniform sampler2D u_positionTexture;
+        uniform sampler2D u_albedoTexture;
+        uniform sampler2D u_normalTexture;
+        layout(location = 0) out vec4 fragColor;
+        vec2 panelUV(vec2 uv) {
+            vec2 p = uv;
+            if (p.x < 0.5) {
+                p.x = p.x * 2.0;
+            } else {
+                p.x = (p.x - 0.5) * 2.0;
+            }
+            if (p.y < 0.5) {
+                p.y = p.y * 2.0;
+            } else {
+                p.y = (p.y - 0.5) * 2.0;
+            }
+            return p;
+        }
+        void main() {
+            vec2 uv = v_uv;
+
+            if (uv.x < 0.5 && uv.y >= 0.5) {
+                vec2 p = vec2(uv.x * 2.0, (uv.y - 0.5) * 2.0);
+                fragColor = texture(u_positionTexture, p);
+            }
+            else if (uv.x >= 0.5 && uv.y >= 0.5) {
+                vec2 p = vec2((uv.x - 0.5) * 2.0, (uv.y - 0.5) * 2.0);
+                vec3 n = texture(u_normalTexture, p).rgb;
+                fragColor = vec4(n, 1.0);
+            }
+            else if (uv.x < 0.5 && uv.y < 0.5) {
+                vec2 p = vec2(uv.x * 2.0, uv.y * 2.0);
+                fragColor = texture(u_albedoTexture, p);
+            }
+            else {
+                vec2 p = vec2((uv.x - 0.5) * 2.0, uv.y * 2.0);
+                fragColor = texture(u_albedoTexture, p);
+            }
+        }
+    `;
+
+    const vsShaded = `#version 300 es
+        in vec2 a_position;
+        out vec2 v_uv;
+
+        void main() {
+            v_uv = a_position * 0.5 + 0.5;
+            gl_Position = vec4(a_position, 0.0, 1.0);
+        }
+    `;
+
+    const fsShaded = `#version 300 es
+        precision mediump float;
+        in vec2 v_uv;
+        
+        uniform sampler2D u_positionTexture;
+        uniform sampler2D u_albedoTexture;
+        uniform sampler2D u_normalTexture;
+        layout(location = 0) out vec4 fragColor;
+        void main() {
+            vec3 worldPos = texture(u_positionTexture, v_uv).xyz;
+            vec3 albedo = texture(u_albedoTexture, v_uv).rgb;
+            vec3 normal = texture(u_normalTexture, v_uv).rgb * 2.0 - 1.0;
+
+            vec3 ambient = 0.1 * albedo;
+            // Simple directional light
+            vec3 lightPos = vec3(0, 0, 0);
+            vec3 lightDir = normalize(lightPos - worldPos);
+            // lightDir = vec3(0, 1, 0);
+            float diff = max(dot(normal, lightDir), 0.0);
+            vec3 diffuse = diff * albedo;
+
+            fragColor = vec4(ambient + diffuse, 1.0);  
+        
+        }
+    `;
+
+    const vsForward = `#version 300 es
+        layout(location = 0) in vec3 a_position;
+        layout(location = 2) in vec3 a_normal;
+
+        uniform mat4 u_model;
+        uniform mat4 u_view;
+        uniform mat4 u_projection;
+
+        out vec3 v_worldPos;
+        out vec3 v_worldNormal;
+
+        void main() {
+            vec4 worldPos = u_model * vec4(a_position, 1.0);
+            gl_Position = u_projection * u_view * worldPos;
+            v_worldPos = worldPos.xyz;
+            v_worldNormal = normalize(mat3(transpose(inverse(mat4(u_model)))) * a_normal);
+        }
+    `;
+
+    const fsForward = `#version 300 es
+        precision mediump float;
+        in vec3 v_worldPos;
+        in vec3 v_worldNormal;
+
+        uniform vec3 u_color;
+
+        layout(location = 0) out vec4 fragColor;
+
+        void main() {
+            vec3 ambient = 0.1 * u_color;
+            // Simple directional light
+            vec3 lightPos = vec3(0, 0, 0);
+            vec3 lightDir = normalize(lightPos - v_worldPos);
+            // lightDir = vec3(0, 1, 0);
+            float diff = max(dot(v_worldNormal, lightDir), 0.0);
+            vec3 diffuse = diff * u_color;
+
+            fragColor = vec4(ambient + diffuse, 1.0);  
+        }
+    `;
+    
+    function compileShader(type, src) {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      return s;
+    }
+
+    const quadProgram = gl.createProgram();
+    gl.attachShader(quadProgram, compileShader(gl.VERTEX_SHADER, vsQuad));
+    gl.attachShader(quadProgram, compileShader(gl.FRAGMENT_SHADER, fsQuad));
+    gl.linkProgram(quadProgram);
+
+    const quadVao = gl.createVertexArray();
+    const quadVbo = gl.createBuffer();
+
+    gl.bindVertexArray(quadVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1, -1,
+    1, -1,
+    -1,  1,
+    -1,  1,
+    1, -1,
+    1,  1
+    ]), gl.STATIC_DRAW);
+
+    const quadPosLoc = gl.getAttribLocation(quadProgram, "a_position");
+    gl.enableVertexAttribArray(quadPosLoc);
+    gl.vertexAttribPointer(quadPosLoc, 2, gl.FLOAT, false, 0, 0);
+
+    const shadedProgram = gl.createProgram();
+    gl.attachShader(shadedProgram, compileShader(gl.VERTEX_SHADER, vsShaded));
+    gl.attachShader(shadedProgram, compileShader(gl.FRAGMENT_SHADER, fsShaded));
+    gl.linkProgram(shadedProgram);
+
+    const geometryProgram = gl.createProgram();
+    gl.attachShader(geometryProgram, compileShader(gl.VERTEX_SHADER, vsGeometry));
+    gl.attachShader(geometryProgram, compileShader(gl.FRAGMENT_SHADER, fsGeometry));
+    gl.linkProgram(geometryProgram);
+
+    
+    const forwardProgram = gl.createProgram();
+    gl.attachShader(forwardProgram, compileShader(gl.VERTEX_SHADER, vsForward));
+    gl.attachShader(forwardProgram, compileShader(gl.FRAGMENT_SHADER, fsForward));
+    gl.linkProgram(forwardProgram);
+
+    // 2. Uniform Locations
+    const uModelLoc = gl.getUniformLocation(geometryProgram, 'u_model');
+    const uViewLoc = gl.getUniformLocation(geometryProgram, 'u_view');
+    const uProjLoc = gl.getUniformLocation(geometryProgram, 'u_projection');
+
+    const forwardModelLoc = gl.getUniformLocation(forwardProgram, 'u_model');
+    const forwardViewLoc = gl.getUniformLocation(forwardProgram, 'u_view');
+    const forwardProjLoc = gl.getUniformLocation(forwardProgram, 'u_projection');
+    const forwardColorLoc = gl.getUniformLocation(forwardProgram, 'u_color');
+
+    //  3. 3D Cube Vertex Data [X, Y, Z, R, G, B]
+    const vertices = new Float32Array([
+        // Front (+Z): normal
+        -0.5, -0.5,  0.5,  0.0, 0.0, 1.0,
+        0.5, -0.5,  0.5,    0.0, 0.0, 1.0,
+        0.5,  0.5,  0.5,   0.0, 0.0, 1.0,
+        -0.5,  0.5,  0.5,  0.0, 0.0, 1.0,
+
+        // Back (-Z)
+        -0.5, -0.5, -0.5,   0.0, 0.0, -1.0,
+        -0.5,  0.5, -0.5,    0.0, 0.0, -1.0,
+        0.5,  0.5, -0.5,     0.0, 0.0, -1.0,
+        0.5, -0.5, -0.5,     0.0, 0.0, -1.0,
+
+        // Left (-X)
+        -0.5, -0.5, -0.5,   -1.0, 0.0, 0.0,
+        -0.5, -0.5,  0.5,   -1.0, 0.0, 0.0,
+        -0.5,  0.5,  0.5,  -1.0, 0.0, 0.0,
+        -0.5,  0.5, -0.5,  -1.0, 0.0, 0.0,
+
+        // Right (+X)
+        0.5, -0.5, -0.5,    1.0, 0.0, 0.0,
+        0.5,  0.5, -0.5,   1.0, 0.0, 0.0,
+        0.5,  0.5,  0.5,    1.0, 0.0, 0.0,
+        0.5, -0.5,  0.5,   1.0, 0.0, 0.0,
+
+        // Top (+Y)
+        -0.5,  0.5, -0.5,    0.0, 1.0, 0.0,
+        -0.5,  0.5,  0.5,   0.0, 1.0, 0.0,
+        0.5,  0.5,  0.5,   0.0, 1.0, 0.0,
+        0.5,  0.5, -0.5,   0.0, 1.0, 0.0,
+
+        // Bottom (-Y)
+        -0.5, -0.5, -0.5,   0.0, -1.0, 0.0,
+        0.5, -0.5, -0.5,  0.0, -1.0, 0.0,
+        0.5, -0.5,  0.5,    0.0, -1.0, 0.0,
+        -0.5, -0.5,  0.5,  0.0, -1.0, 0.0
+    ]);
+
+    const indices = new Uint16Array([
+       0,  1,  2,     0,  2,  3,
+       4,  5,  6,     4,  6,  7,
+       8,  9, 10,     8, 10, 11,
+      12, 13, 14,    12, 14, 15,
+      16, 17, 18,    16, 18, 19,
+      20, 21, 22,    20, 22, 23
+    ]);
+
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+
+    const vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+    const ebo = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+
+    const stride = 6 * Float32Array.BYTES_PER_ELEMENT;
+    const posLoc = gl.getAttribLocation(geometryProgram, 'a_position');
+    const normLoc = gl.getAttribLocation(geometryProgram, 'a_normal');
+
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, stride, 0);
+
+    gl.enableVertexAttribArray(normLoc);
+    gl.vertexAttribPointer(normLoc, 3, gl.FLOAT, false, stride, 3 * Float32Array.BYTES_PER_ELEMENT);
+
+    const cubes = Array.from({ length: 10 }, () => ({
+      position: [
+        (Math.random() - 0.5) * 5,
+        (Math.random() - 0.5) * 5,
+        (Math.random() - 0.5) * 5
+      ],
+      size: Math.random() * 0.25 + 0.5,
+      rotation: [
+        Math.random() * Math.PI * 2,
+        Math.random() * Math.PI * 2,
+        Math.random() * Math.PI * 2
+      ], 
+      color: [Math.random(), Math.random(), Math.random()]
+    }));
+
+    const modelMatrix = mat4.create();
+    const viewMatrix = mat4.create();
+    const projectionMatrix = mat4.create();
+    const renderModeButtons = Array.from(document.querySelectorAll('.mode-btn'));
+    let renderMode = 'deferred';
+
+    function setRenderMode(nextMode) {
+      renderMode = nextMode;
+      renderModeButtons.forEach((button) => {
+        const isActive = button.dataset.mode === renderMode;
+        button.style.background = isActive ? '#93c5fd' : '#dbeafe';
+        button.style.boxShadow = isActive ? 'inset 0 0 0 2px rgba(15, 23, 42, 0.5)' : 'none';
+      });
+    }
+
+    renderModeButtons.forEach((button) => {
+      button.addEventListener('click', () => setRenderMode(button.dataset.mode));
+    });
+    setRenderMode(renderMode);
+
+    const camera = {
+      position: [0, 2, 5],
+      target: [0, 0, 0],
+      speed: 2.5,
+      yaw: 0,
+      pitch: 0.4
+    };
+    const pressedKeys = {};
+
+    window.addEventListener('keydown', (event) => {
+      pressedKeys[event.code] = true;
+    });
+    window.addEventListener('keyup', (event) => {
+      pressedKeys[event.code] = false;
+    });
+    window.addEventListener('blur', () => {
+      Object.keys(pressedKeys).forEach((key) => {
+        pressedKeys[key] = false;
+      });
+    });
+
+    function updateCamera(dt) {
+      const forward = vec3.create();
+      const right = vec3.create();
+      const move = vec3.create();
+      const up = [0, 1, 0];
+
+      if (pressedKeys.ArrowLeft) camera.yaw += dt * 1.6;
+      if (pressedKeys.ArrowRight) camera.yaw -= dt * 1.6;
+      if (pressedKeys.ArrowUp) camera.pitch += dt * 1.6;
+      if (pressedKeys.ArrowDown) camera.pitch -= dt * 1.6;
+      camera.pitch = Math.max(-1.2, Math.min(1.2, camera.pitch));
+
+      const distance = vec3.length(vec3.subtract(forward, camera.target, camera.position));
+      const x = Math.sin(camera.yaw) * Math.cos(camera.pitch) * 1;
+      const y = -Math.sin(camera.pitch) * 1;
+      const z = Math.cos(camera.yaw) * Math.cos(camera.pitch) * 1;
+      camera.position[0] = camera.target[0] + x;
+      camera.position[1] = camera.target[1] + y;
+      camera.position[2] = camera.target[2] + z;
+
+      vec3.subtract(forward, camera.target, camera.position);
+      vec3.normalize(forward, forward);
+      vec3.cross(right, forward, up);
+      vec3.normalize(right, right);
+
+      if (pressedKeys.KeyW) vec3.add(move, move, forward);
+      if (pressedKeys.KeyS) vec3.subtract(move, move, forward);
+      if (pressedKeys.KeyD) vec3.add(move, move, right);
+      if (pressedKeys.KeyA) vec3.subtract(move, move, right);
+
+      if (vec3.length(move) > 0) {
+        vec3.normalize(move, move);
+        vec3.scale(move, move, camera.speed * dt);
+        vec3.add(camera.position, camera.position, move);
+        vec3.add(camera.target, camera.target, move);
+      }
+    }
+
+    function updateProjection() {
+      const aspect = window.innerWidth / window.innerHeight;
+      const fov = (45 * Math.PI) / 180;
+      mat4.perspective(projectionMatrix, fov, aspect, 0.1, 100.0);
+
+      gl.viewport(0, 0, window.innerWidth, window.innerHeight);
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', updateProjection);
+    updateProjection();
+
+    
+    const gBuffer = gl.createFramebuffer();
+    
+    const positionTexture = gl.createTexture();
+    const albedoTexture = gl.createTexture();
+    const normalTexture = gl.createTexture();
+    const depthBuffer = gl.createRenderbuffer();
+    let previousTime = performance.now();
+
+    function render(now) {
+        const dt = (now - previousTime) * 0.001;
+        previousTime = now;
+        updateCamera(dt);
+        now *= 0.001;
+
+        if (renderMode !== 'forward') {
+          gl.enable(gl.CULL_FACE);
+          gl.cullFace(gl.BACK);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, gBuffer);
+
+          gl.bindTexture(gl.TEXTURE_2D, positionTexture);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+          
+          gl.bindTexture(gl.TEXTURE_2D, albedoTexture);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+          gl.bindTexture(gl.TEXTURE_2D, normalTexture);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, positionTexture, 0);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, albedoTexture, 0);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT2, gl.TEXTURE_2D, normalTexture, 0);
+          
+          gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
+          gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, canvas.width, canvas.height);
+          gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
+
+          gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2]);
+
+          gl.useProgram(geometryProgram);
+          gl.clearColor(0.0, 0.0, 0.0, 1.0);
+          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+          mat4.lookAt(viewMatrix, camera.position, camera.target, [0, 1, 0]);
+          
+          gl.enable(gl.DEPTH_TEST);
+          gl.depthFunc(gl.LEQUAL);
+          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+          
+          for (const cube of cubes) {
+              mat4.identity(modelMatrix);
+              
+              mat4.translate(modelMatrix, modelMatrix, cube.position);
+              mat4.scale(modelMatrix, modelMatrix, [cube.size, cube.size, cube.size]);
+              mat4.rotateY(modelMatrix, modelMatrix, cube.rotation[1]  * 0.1);
+              mat4.rotateZ(modelMatrix, modelMatrix, cube.rotation[2]  * 0.1);
+              mat4.rotateX(modelMatrix, modelMatrix, cube.rotation[0] * now * 0.1);
+              gl.uniformMatrix4fv(uModelLoc, false, modelMatrix);
+              gl.uniformMatrix4fv(uViewLoc, false, viewMatrix);
+              gl.uniformMatrix4fv(uProjLoc, false, projectionMatrix);
+              gl.uniform3f(gl.getUniformLocation(geometryProgram, "u_color"), cube.color[0], cube.color[1], cube.color[2]);
+
+              gl.bindVertexArray(vao);
+              gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+          }
+        }
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+
+        if (renderMode === 'forward') {
+          gl.enable(gl.DEPTH_TEST);
+          gl.clearColor(0.00, 0.00, 0.00, 1.0);
+          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+          gl.useProgram(forwardProgram);
+
+          mat4.lookAt(viewMatrix, camera.position, camera.target, [0, 1, 0]);
+          for (const cube of cubes) {
+            mat4.identity(modelMatrix);
+            mat4.translate(modelMatrix, modelMatrix, cube.position);
+            mat4.scale(modelMatrix, modelMatrix, [cube.size, cube.size, cube.size]);
+            mat4.rotateY(modelMatrix, modelMatrix, cube.rotation[1] * 0.1);
+            mat4.rotateZ(modelMatrix, modelMatrix, cube.rotation[2] * 0.1);
+            mat4.rotateX(modelMatrix, modelMatrix, cube.rotation[0] * now * 0.1);
+
+            gl.uniformMatrix4fv(forwardModelLoc, false, modelMatrix);
+            gl.uniformMatrix4fv(forwardViewLoc, false, viewMatrix);
+            gl.uniformMatrix4fv(forwardProjLoc, false, projectionMatrix);
+            gl.uniform3f(forwardColorLoc, cube.color[0], cube.color[1], cube.color[2]);
+
+            gl.bindVertexArray(vao);
+            gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+          }
+        } else {
+          gl.disable(gl.DEPTH_TEST);
+          const activeProgram = renderMode === 'quad' ? quadProgram : shadedProgram;
+          gl.useProgram(activeProgram);
+
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, albedoTexture);
+          gl.uniform1i(gl.getUniformLocation(activeProgram, "u_albedoTexture"), 0);
+
+          gl.activeTexture(gl.TEXTURE1);
+          gl.bindTexture(gl.TEXTURE_2D, positionTexture);
+          gl.uniform1i(gl.getUniformLocation(activeProgram, "u_positionTexture"), 1);
+
+          gl.activeTexture(gl.TEXTURE2);
+          gl.bindTexture(gl.TEXTURE_2D, normalTexture);
+          gl.uniform1i(gl.getUniformLocation(activeProgram, "u_normalTexture"), 2);
+
+          gl.bindVertexArray(quadVao);
+          gl.drawArrays(gl.TRIANGLES, 0, 6);
+        }
+
+        requestAnimationFrame(render);
+    }
+    requestAnimationFrame(render);
+  </script>
+</body>
+</html>
